@@ -1,238 +1,276 @@
-#!/usr/bin/env python3
-"""
-Simple Ping Bot - For Testing
-==============================
-This bot:
-1. Gets domains from your Django API (from scope)
-2. Pings each domain
-3. Sends results to Telegram
+name: test - Automated Scans
 
-Very simple, no fancy features - just for testing!
-"""
+on:
+  # Scheduled runs
+  schedule:
+    - cron: '30 * * * *'
 
-import os
-import subprocess
-import requests
-import time
-from datetime import datetime
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      force_restart:
+        description: 'Force restart (ignore resume state)'
+        required: false
+        type: boolean
+        default: false
+      scan_type_filter:
+        description: 'Run specific scan type only (optional)'
+        required: false
+        type: string
+        default: ''
 
-# ============================================
-# CONFIGURATION (Set these in GitHub Secrets)
-# ============================================
-DJANGO_API_URL = os.getenv('DJANGO_API_URL', 'http://your-server.com')
-AUTOMATION_TOKEN = os.getenv('AUTOMATION_TOKEN', 'your-token-here')
-DEVICE_ID = os.getenv('DEVICE_ID', 'your-device-id')
-GROUP_IDS = os.getenv('GROUP_IDS', '1')  # Group ID (e.g., "1" or "1,2,3")
-# No need for direct Telegram access - Django API handles it!
+# Allow concurrent runs
+concurrency:
+  group: scan-${{ github.run_id }}
+  cancel-in-progress: false
 
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
+jobs:
+  scan:
+    name: Run Scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
 
-def upload_results_to_django(results):
-    """Upload ping results to Django API (which then stores in Telegram)"""
-    print("📤 Uploading results to Django API...")
-    
-    try:
-        headers = {
-            'Authorization': f'Token {AUTOMATION_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-        
-        # Create results file content
-        results_text = "# Ping Scan Results\n"
-        results_text += f"# Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        results_text += f"# Total Scanned: {len(results)}\n\n"
-        
-        for r in results:
-            results_text += f"{r['domain']}: {r['status']}\n"
-            results_text += f"  Details: {r['details']}\n"
-            results_text += f"  Time: {r['timestamp']}\n\n"
-        
-        # Upload to Django API endpoint
-        # The Django API will handle storing in Telegram
-        response = requests.post(
-            f'{DJANGO_API_URL}/api/scans/upload-results/',
-            headers=headers,
-            json={
-                'scan_type': 'ping-check',
-                'results': results_text,
-                'file_name': f"ping_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                'device_id': DEVICE_ID
-            },
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            print("✅ Results uploaded to Django API successfully")
-            print("   Django will store them in Telegram automatically")
-        else:
-            print(f"⚠️  Upload failed: {response.status_code}")
-            print(f"   Response: {response.text}")
-    
-    except Exception as e:
-        print(f"❌ Upload error: {e}")
+    steps:
+      - name: Clone scanner repository
+        run: |
+          echo "📦 Cloning scanner repository..."
 
+          # Try to use SCRIPT_REPO_URL from secrets first, then fall back to REPO
+          REPO_URL="${{ secrets.SCRIPT_REPO_URL }}"
 
-def ping_domain(domain):
-    """Ping a domain and return result"""
-    print(f"  🏓 Pinging {domain}...")
-    
-    try:
-        # Ping command (works on Linux/Mac)
-        result = subprocess.run(
-            ['ping', '-c', '4', domain],  # 4 pings
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode == 0:
-            # Extract ping time from output
-            lines = result.stdout.split('\n')
-            stats_line = [l for l in lines if 'min/avg/max' in l or 'rtt' in l]
-            
-            status = "✅ ONLINE"
-            details = stats_line[0] if stats_line else "Ping successful"
-        else:
-            status = "❌ OFFLINE"
-            details = "Host unreachable"
-        
-        return {
-            'domain': domain,
-            'status': status,
-            'details': details,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-    
-    except subprocess.TimeoutExpired:
-        return {
-            'domain': domain,
-            'status': "⏱️ TIMEOUT",
-            'details': "Ping timeout after 30s",
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-    except Exception as e:
-        return {
-            'domain': domain,
-            'status': "❌ ERROR",
-            'details': str(e),
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
+          if [ -z "$REPO_URL" ]; then
+            REPO_URL="${{ secrets.REPO }}"
+          fi
 
+          if [ -z "$REPO_URL" ]; then
+            echo "❌ ERROR: No repository URL configured!"
+            echo "Please set either SCRIPT_REPO_URL or REPO secret in GitHub"
+            exit 1
+          fi
 
-def get_targets_from_api():
-    """Get target domains from Django API"""
-    print("📡 Fetching targets from API...")
-    
-    try:
-        headers = {
-            'Authorization': f'Token {AUTOMATION_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-        
-        # Get programs from groups
-        group_ids = [g.strip() for g in GROUP_IDS.split(',') if g.strip()]
-        all_domains = []
-        
-        for group_id in group_ids:
-            print(f"  📁 Getting programs from Group {group_id}...")
-            
-            # Get group programs
-            response = requests.get(
-                f'{DJANGO_API_URL}/api/groups/{group_id}/programs/',
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                print(f"  ⚠️  Failed to get group {group_id}: {response.status_code}")
-                continue
-            
-            programs = response.json()
-            print(f"  ✅ Found {len(programs)} programs")
-            
-            # Get domains from each program
-            for program in programs:
-                program_id = program['id']
-                program_name = program['name']
-                
-                print(f"    🎯 Getting scopes for: {program_name}")
-                
-                # Get program scopes
-                scope_response = requests.get(
-                    f'{DJANGO_API_URL}/api/programs/{program_id}/scopes/',
-                    headers=headers,
-                    timeout=30
-                )
-                
-                if scope_response.status_code == 200:
-                    scopes = scope_response.json()
-                    
-                    for scope in scopes:
-                        if scope.get('scope_type') == 'in_scope':
-                            domain = scope.get('domain') or scope.get('target')
-                            if domain:
-                                all_domains.append({
-                                    'domain': domain,
-                                    'program': program_name
-                                })
-        
-        print(f"✅ Total domains to ping: {len(all_domains)}")
-        return all_domains
-    
-    except Exception as e:
-        print(f"❌ API Error: {e}")
-        return []
+          echo "Repository: $REPO_URL"
+          git clone "$REPO_URL" scanner-repo
+          cd scanner-repo
+          echo "✅ Repository cloned"
+          echo ""
+          echo "📂 Contents:"
+          ls -la
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-def main():
-    """Main function"""
-    print("=" * 50)
-    print("🏓 SIMPLE PING BOT - STARTING")
-    print("=" * 50)
-    print(f"⏰ Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print()
-    
-    # No need to send notifications - Django handles everything!
-    
-    # Get targets
-    targets = get_targets_from_api()
-    
-    if not targets:
-        print("❌ No targets found!")
-        send_telegram("❌ <b>No targets found!</b>\nCheck your API configuration.")
-        return
-    
-    # Ping each domain
-    results = []
-    for i, target in enumerate(targets, 1):
-        print(f"\n[{i}/{len(targets)}] {target['domain']} ({target['program']})")
-        result = ping_domain(target['domain'])
-        result['program'] = target['program']
-        results.append(result)
-        time.sleep(2)  # Wait 2 seconds between pings
-    
-    # Summary
-    print("\n" + "=" * 50)
-    print("📊 RESULTS SUMMARY")
-    print("=" * 50)
-    
-    online = [r for r in results if '✅' in r['status']]
-    offline = [r for r in results if '❌' in r['status']]
-    timeout = [r for r in results if '⏱️' in r['status']]
-    
-    print(f"✅ Online: {len(online)}")
-    print(f"❌ Offline: {len(offline)}")
-    print(f"⏱️ Timeout: {len(timeout)}")
-    print(f"📊 Total: {len(results)}")
-    
-    # Upload results to Django API (Django will store in Telegram)
-    upload_results_to_django(results)
-    
-    print("\n✅ Done!")
-    print("=" * 50)
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-test
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
+      - name: Install dependencies
+        run: |
+          cd scanner-repo
+          python -m pip install --upgrade pip
 
-if __name__ == '__main__':
-    main()
+          if [ -f requirements.txt ]; then
+            echo "📦 Installing from requirements.txt..."
+            pip install -r requirements.txt
+          else
+            echo "📦 Installing default packages..."
+            pip install requests rich urllib3 dnspython
+          fi
+
+          echo ""
+          echo "✅ Packages installed:"
+          pip list | head -20
+
+      - name: Verify scanner script
+        run: |
+          cd scanner-repo
+          echo "🔍 Verifying script: bot.py"
+
+          if [ ! -f "bot.py" ]; then
+            echo "❌ ERROR: bot.py not found!"
+            echo ""
+            echo "Available files:"
+            find . -name "*.py" -type f
+            exit 1
+          fi
+
+          echo "✅ Script found"
+
+      - name: Run scanner
+        env:
+          DJANGO_API_URL: ${{ secrets.DJANGO_API_URL }}
+          DJANGO_API_KEY: ${{ secrets.DJANGO_API_KEY }}
+          AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
+          DEVICE_ID: ${{ secrets.DEVICE_ID }}
+          # No group filter
+          GITHUB_ACTIONS: 'true'
+          CI: 'true'
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          cd scanner-repo
+
+          echo "🚀 Starting scanner..."
+          echo "=========================================="
+          echo "📅 Timestamp: $(date)"
+          echo "🔢 Run ID: ${{ github.run_id }}"
+          echo "🔢 Run Number: ${{ github.run_number }}"
+          echo "⚙️  Device: test (ID: ${{ secrets.DEVICE_ID }})"
+
+          echo "🔍 Scans: All Scans"
+          echo "=========================================="
+          echo ""
+
+          # Build command arguments
+          SCAN_ARGS=""
+
+          # Add force restart if specified
+          if [ "${{ github.event.inputs.force_restart }}" == "true" ]; then
+            SCAN_ARGS="$SCAN_ARGS --force-restart"
+            echo "⚠️  Force restart enabled"
+          fi
+
+          # Add scan type filter if specified
+          if [ -n "${{ github.event.inputs.scan_type_filter }}" ]; then
+            SCAN_ARGS="$SCAN_ARGS --scan-type ${{ github.event.inputs.scan_type_filter }}"
+            echo "🎯 Scan type filter: ${{ github.event.inputs.scan_type_filter }}"
+          fi
+
+          echo ""
+          echo "▶️  Command: python bot.py $SCAN_ARGS"
+          echo ""
+
+          # Run scanner with timeout
+          timeout 325m python bot.py $SCAN_ARGS || exit_code=$?
+
+          # Handle exit codes
+          if [ ${exit_code:-0} -eq 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "✅ Scan completed successfully"
+            echo "=========================================="
+            exit 0
+          elif [ ${exit_code:-0} -eq 124 ]; then
+            echo ""
+            echo "=========================================="
+            echo "⏰ Scanner timed out"
+            echo "✅ Progress saved - will resume next run"
+            echo "=========================================="
+            exit 0
+          else
+            echo ""
+            echo "=========================================="
+            echo "❌ Scanner failed with exit code: ${exit_code:-0}"
+            echo "=========================================="
+            exit ${exit_code:-0}
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-logs-${{ github.run_id }}
+          path: |
+            scanner-repo/*.log
+            scanner-repo/.scan_state/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Cleanup on failure
+        if: failure()
+        env:
+          DJANGO_API_URL: ${{ secrets.DJANGO_API_URL }}
+          AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
+          DEVICE_ID: ${{ secrets.DEVICE_ID }}
+        run: |
+          echo "🧹 Cleaning up after failure..."
+
+          if [ -z "$DJANGO_API_URL" ] || [ -z "$AUTOMATION_TOKEN" ]; then
+            echo "⚠️  Cleanup skipped - credentials not configured"
+            exit 0
+          fi
+
+          # Cleanup stale runs
+          curl -X POST "${{ secrets.DJANGO_API_URL }}/api/automation/cleanup-stale/" \
+            -H "Authorization: Token ${{ secrets.AUTOMATION_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"max_hours": 6}' \
+            --silent --show-error || true
+
+          # Reset device if needed
+          if [ -n "$DEVICE_ID" ]; then
+            curl -X POST "${{ secrets.DJANGO_API_URL }}/api/automation/device/force-reset/" \
+              -H "Authorization: Token ${{ secrets.AUTOMATION_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"device_id\": ${{ secrets.DEVICE_ID }}}" \
+              --silent --show-error || true
+          fi
+
+          echo "✅ Cleanup completed"
+
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: scan
+    if: always()
+
+    steps:
+      - name: Cleanup stale runs
+        env:
+          DJANGO_API_URL: ${{ secrets.DJANGO_API_URL }}
+          AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
+        run: |
+          echo "🧹 Running cleanup..."
+
+          if [ -z "$DJANGO_API_URL" ] || [ -z "$AUTOMATION_TOKEN" ]; then
+            echo "⚠️  Skipped - credentials not configured"
+            exit 0
+          fi
+
+          curl -X POST "${{ secrets.DJANGO_API_URL }}/api/automation/cleanup-stale/" \
+            -H "Authorization: Token ${{ secrets.AUTOMATION_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"max_hours": 6}' \
+            --silent --show-error || true
+
+          echo "✅ Cleanup completed"
+
+  status:
+    name: Report Status
+    runs-on: ubuntu-latest
+    needs: [scan, cleanup]
+    if: always()
+
+    steps:
+      - name: Report status
+        run: |
+          echo "📊 Workflow Status Report"
+          echo "=========================================="
+          echo "Device: test"
+          echo "Scans: All Scans"
+
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Timestamp: $(date)"
+          echo "=========================================="
+          echo ""
+          echo "Job Results:"
+          echo "  • Scan: ${{ needs.scan.result }}"
+          echo "  • Cleanup: ${{ needs.cleanup.result }}"
+          echo ""
+
+          if [ "${{ needs.scan.result }}" == "success" ]; then
+            echo "✅ All scans completed successfully"
+          elif [ "${{ needs.scan.result }}" == "failure" ]; then
+            echo "❌ Scan job failed"
+            echo ""
+            echo "🔍 Troubleshooting:"
+            echo "  1. Check logs in Actions tab"
+            echo "  2. Verify all secrets are set correctly"
+            echo "  3. Ensure script exists: bot.py"
+            echo "  4. Try manual run with force_restart: true"
+          fi
