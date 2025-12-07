@@ -47,7 +47,7 @@ jobs:
           fi
 
           # Fetch device config from Django API
-          RESPONSE=$(curl -s -X GET "$DJANGO_API_URL/api/scans/api/device-config/?device_id=$DEVICE_ID" \
+          RESPONSE=$(curl -s -X GET "$DJANGO_API_URL/scans/api/device-config/?device_id=$DEVICE_ID" \
             -H "Authorization: Token $AUTOMATION_TOKEN" \
             -H "Content-Type: application/json")
 
