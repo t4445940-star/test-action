@@ -58,30 +58,41 @@ jobs:
           SCRIPT_PATH=$(echo "$RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('script_path', 'bot.py'))")
 
           if [ -z "$REPO_URL" ] || [ "$REPO_URL" == "None" ]; then
-            echo "❌ ERROR: No repository URL configured in device settings!"
-            echo "Please add a script repository URL to your scan type or device configuration"
-            exit 1
+            echo "⚠️ WARNING: No repository URL configured"
+            echo "📝 Device will run without external scripts"
+            echo "ℹ️ To add scripts, configure a repository URL in device or scan type settings"
+            SKIP_CLONE=true
+          else
+            SKIP_CLONE=false
           fi
 
           echo "✅ Configuration fetched from server"
-          echo "Repository: $REPO_URL"
+          if [ "$SKIP_CLONE" = "false" ]; then
+            echo "Repository: $REPO_URL"
+          fi
           echo "Script: $SCRIPT_PATH"
 
           # Export for next steps
           echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV
           echo "SCRIPT_PATH=$SCRIPT_PATH" >> $GITHUB_ENV
+          echo "SKIP_CLONE=$SKIP_CLONE" >> $GITHUB_ENV
 
       - name: Clone scanner repository
         run: |
-          echo "📦 Cloning scanner repository..."
-          echo "Repository: $REPO_URL"
+          if [ "$SKIP_CLONE" = "true" ]; then
+            echo "⏭️ Skipping repository clone (no URL configured)"
+            mkdir -p scanner-repo
+          else
+            echo "📦 Cloning scanner repository..."
+            echo "Repository: $REPO_URL"
 
-          git clone "$REPO_URL" scanner-repo
-          cd scanner-repo
-          echo "✅ Repository cloned"
-          echo ""
-          echo "📂 Contents:"
-          ls -la
+            git clone "$REPO_URL" scanner-repo
+            cd scanner-repo
+            echo "✅ Repository cloned"
+            echo ""
+            echo "📂 Contents:"
+            ls -la
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
