@@ -3,7 +3,7 @@ name: test - Automated Scans
 on:
   # Scheduled runs
   schedule:
-    - cron: '30 * * * *'
+    - cron: '*/5 * * * *'
 
   # Manual trigger
   workflow_dispatch:
