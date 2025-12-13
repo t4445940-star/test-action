@@ -20,31 +20,57 @@ jobs:
           DEVICE_ID: ad17c3b3-7895-4c7b-90ce-cfe8f8dac036
         run: |
           python << 'EOF'
-          import requests, subprocess, time, os
+          import requests, subprocess, time, os, sys
 
           API_URL = os.environ['API_URL']
           TOKEN = os.environ['DEVICE_TOKEN']
           DEVICE_ID = os.environ['DEVICE_ID']
 
+          print(f"Connecting to: {API_URL}")
+          print(f"Device ID: {DEVICE_ID}")
+
           while True:
-              r = requests.get(f'{API_URL}/api/automation/tasks/pending/', 
-                               headers={'Authorization': f'Token {TOKEN}'},
-                               params={'device_id': DEVICE_ID})
-              
-              if r.status_code != 200 or not r.json().get('tasks'):
-                  break
-              
-              for task in r.json()['tasks']:
-                  task_id = task['id']
-                  requests.post(f'{API_URL}/api/automation/tasks/{task_id}/start/', 
-                               headers={'Authorization': f'Token {TOKEN}'})
+              try:
+                  r = requests.get(f'{API_URL}/api/automation/tasks/pending/', 
+                                   headers={'Authorization': f'Token {TOKEN}'},
+                                   params={'device_id': DEVICE_ID})
                   
-                  result = subprocess.run(task['command'], shell=True, capture_output=True, text=True)
+                  print(f"Status: {r.status_code}")
+                  print(f"Response: {r.text}")
                   
-                  requests.post(f'{API_URL}/api/automation/tasks/{task_id}/complete/', 
-                               headers={'Authorization': f'Token {TOKEN}'},
-                               json={'output': result.stdout, 'error': result.stderr, 
-                                     'exit_code': result.returncode})
-              
-              time.sleep(10)
+                  if r.status_code != 200:
+                      print(f"Error: {r.status_code}")
+                      break
+                  
+                  tasks = r.json().get('tasks', [])
+                  if not tasks:
+                      print("No pending tasks")
+                      break
+                  
+                  print(f"Found {len(tasks)} tasks")
+                  
+                  for task in tasks:
+                      task_id = task['id']
+                      print(f"Executing task: {task['name']}")
+                      print(f"Command: {task['command']}")
+                      
+                      requests.post(f'{API_URL}/api/automation/tasks/{task_id}/start/', 
+                                   headers={'Authorization': f'Token {TOKEN}'})
+                      
+                      result = subprocess.run(task['command'], shell=True, capture_output=True, text=True)
+                      
+                      print(f"Exit code: {result.returncode}")
+                      print(f"Output: {result.stdout}")
+                      if result.stderr:
+                          print(f"Error: {result.stderr}")
+                      
+                      requests.post(f'{API_URL}/api/automation/tasks/{task_id}/complete/', 
+                                   headers={'Authorization': f'Token {TOKEN}'},
+                                   json={'output': result.stdout, 'error': result.stderr, 
+                                         'exit_code': result.returncode})
+                  
+                  time.sleep(10)
+              except Exception as e:
+                  print(f"Exception: {e}")
+                  sys.exit(1)
           EOF
